@@ -1,3 +1,5 @@
 .venv
-venv
-!.ipynb
+*!.ipynb
+*!.py
+*!.txt
+__pycache__
