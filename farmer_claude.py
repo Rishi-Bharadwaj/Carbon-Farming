@@ -63,7 +63,7 @@ class Farmer:
 
     @staticmethod
     def action_space():
-        return spaces.MultiDiscrete([4, NUM_CROPS, NUM_INPUTS, 2])
+        return spaces.MultiDiscrete([4, NUM_CROPS, NUM_INPUTS, 2]) #(contract, crops, inputs, till)
 
     @staticmethod
     def observation_space():
