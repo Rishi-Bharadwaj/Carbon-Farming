@@ -10,7 +10,7 @@ Step sequence per period:
 import functools
 import numpy as np
 from pettingzoo import AECEnv
-from pettingzoo.utils import agent_selector
+from pettingzoo.utils import AgentSelector
 from gymnasium import spaces
 
 from farmer import Farmer, create_farmers, CROPS, INPUTS, TILLAGE, CONTRACT_TYPES
@@ -46,7 +46,7 @@ class CarbonFarmingEnv(AECEnv):
             f"farmer_{i}" for i in range(self.num_farmers)]
         self.agents = self.possible_agents[:]
 
-        self._selector = agent_selector(self.agents)
+        self._selector = AgentSelector(self.agents)
         self.agent_selection = self._selector.reset()
 
         # Period state
@@ -80,9 +80,6 @@ class CarbonFarmingEnv(AECEnv):
             return Aggregator.build_action_space()
         return Farmer.build_action_space()
 
-    # ================================================================
-    # Observations
-    # ================================================================
 
     def observe(self, agent):
         """Return current observation for the given agent."""
@@ -91,9 +88,6 @@ class CarbonFarmingEnv(AECEnv):
         idx = int(agent.split("_")[1])
         return self.farmer_objs[idx].get_observation()
 
-    # ================================================================
-    # Core AEC loop
-    # ================================================================
 
     def reset(self, seed=None, options=None):
         """Reset environment for a new episode."""
@@ -101,7 +95,7 @@ class CarbonFarmingEnv(AECEnv):
             np.random.seed(seed)
 
         self.agents = self.possible_agents[:]
-        self._selector = agent_selector(self.agents)
+        self._selector = AgentSelector(self.agents)
         self.agent_selection = self._selector.reset()
 
         self.agg.reset_episode()
@@ -199,7 +193,7 @@ class CarbonFarmingEnv(AECEnv):
         self.agg.reset_period()
         for f in self.farmer_objs:
             f.reset_period()
-        self._selector = agent_selector(self.agents)
+        self._selector = AgentSelector(self.agents)
         self.agent_selection = self._selector.reset()
 
     # ================================================================

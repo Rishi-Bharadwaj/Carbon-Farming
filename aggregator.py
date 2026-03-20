@@ -52,10 +52,6 @@ class Aggregator:
         self.revenue_total = 0.0
         self.menu = None
 
-    # ================================================================
-    # Spaces
-    # ================================================================
-
     @staticmethod
     def build_action_space():
         """Continuous params for 3 independent contracts, stacked into one Box."""
@@ -88,9 +84,6 @@ class Aggregator:
                 shape=(num_farmers,), dtype=np.float32),
         })
 
-    # ================================================================
-    # Observations
-    # ================================================================
 
     def get_observation(self, farmers):
         """Build observation from public/noisy farmer info and own state."""
@@ -112,9 +105,6 @@ class Aggregator:
             "previous_carbon": np.array(prev_carbon, dtype=np.float32),
         }
 
-    # ================================================================
-    # Action decoding
-    # ================================================================
 
     def decode_action_to_contracts(self, raw_action):
         """
@@ -162,9 +152,7 @@ class Aggregator:
         }
         return self.menu
 
-    # ================================================================
-    # Outcome processing
-    # ================================================================
+
 
     def get_mrv_cost(self, contract_type, farm_size):
         """Total MRV cost for a farmer given contract type and farm size."""
@@ -189,9 +177,6 @@ class Aggregator:
         self.prev_accepted[farmer.fid] = -1.0
         self.prev_carbon[farmer.fid] = 0.0
 
-    # ================================================================
-    # Reward
-    # ================================================================
 
     def compute_reward(self):
         """
@@ -207,9 +192,6 @@ class Aggregator:
             reward -= overspend * 2.0
         return reward
 
-    # ================================================================
-    # State management
-    # ================================================================
 
     def reset_period(self):
         """Reset per-period totals. History preserved for multi-period."""

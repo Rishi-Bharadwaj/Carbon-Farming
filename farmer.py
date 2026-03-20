@@ -1,6 +1,9 @@
 """
 Carbon Farming Contract Design - Farmer (Minimal Workshop Version)
 
+All monetary values are per acre. farm_size is in acres [1, 10].
+Total = per_acre_value * farm_size. No unit conversions needed.
+
 Information structure:
     Public:    farm_size, previous_crop_choices
     Noisy:     soil_quality (aggregator sees signal + noise)
@@ -28,18 +31,23 @@ WEATHER_YIELD_STD = 0.15
 
 # Carbon (tons CO2e per acre)
 BASE_CARBON = 0.2
-SOIL_CARBON_FACTOR = 0.2
+SOIL_CARBON_FACTOR = 0.3
 CROP_CARBON = {"corn": 0.0, "soybean": 0.05, "wheat": 0.05, "cover_crop": 0.3}
 INPUT_CARBON = {"chemical_fertilizer": 0.0, "manure": 0.05, "none": 0.15}
 TILLAGE_CARBON = {"conventional": 0.0, "no_till": 0.25}
 WEATHER_CARBON_STD = 0.1
 
-# Economics (per farm-unit = 100 acres)
-CROP_COSTS = {"corn": 300, "soybean": 200, "wheat": 180, "cover_crop": 120}
-INPUT_COSTS = {"chemical_fertilizer": 80, "manure": 50, "none": 0}
-CROP_PRICES = {"corn": 4.5, "soybean": 12.0, "wheat": 6.5, "cover_crop": 0.0}
+# Economics — all per acre
+SEED_COST_PER_ACRE = {"corn": 120.0, "soybean": 60.0, "wheat": 50.0, "cover_crop": 35.0}
+INPUT_COST_PER_ACRE = {"chemical_fertilizer": 80.0, "manure": 50.0, "none": 0.0}
+CROP_PRICE_PER_BUSHEL = {"corn": 4.5, "soybean": 12.0, "wheat": 6.5, "cover_crop": 0.0}
 
-# Practices the aggregator can pay for individually in action/hybrid contracts
+# Interest rate: farmer values upfront cash more than deferred payment
+# Effective upfront value to farmer = upfront_amount * (1 + INTEREST_RATE)
+# Effective upfront cost to aggregator = upfront_amount * (1 + INTEREST_RATE)
+INTEREST_RATE = 0.08  # 8% annual
+
+# Practices the aggregator can pay for individually
 PAYABLE_ACTIONS = {
     "use_cover_crop": lambda crop, inp, till: crop == "cover_crop",
     "use_no_till": lambda crop, inp, till: till == "no_till",
@@ -52,6 +60,32 @@ PAYABLE_ACTION_NAMES = list(PAYABLE_ACTIONS.keys())
 CONTRACT_TYPES = ["action", "result", "hybrid"]
 
 
+def _build_crop_history_from_preferences(crop_pref, length):
+    """
+    Build a deterministic crop history from preference weights.
+    Allocates history slots proportional to preference, highest first.
+    """
+    sorted_crops = sorted(crop_pref.keys(), key=lambda c: crop_pref[c], reverse=True)
+    history = []
+    remaining = length
+    total_weight = sum(crop_pref.values())
+
+    for crop in sorted_crops:
+        if remaining <= 0:
+            break
+        share = crop_pref[crop] / total_weight
+        count = max(1, round(share * length)) if share > 0 else 0
+        count = min(count, remaining)
+        history.extend([crop] * count)
+        remaining -= count
+
+    # Fill any remainder with top preference
+    while len(history) < length:
+        history.append(sorted_crops[0])
+
+    return history[:length]
+
+
 class Farmer:
     """Heterogeneous farmer agent with private preferences and public observables."""
 
@@ -60,7 +94,7 @@ class Farmer:
         """
         Args:
             fid: unique farmer identifier
-            farm_size: int [1,10], each unit = 100 acres
+            farm_size: int [1,10], in acres
             soil_quality: float [0,1], true soil carbon potential
             crop_pref: dict over CROPS, weights summing to ~1
             input_pref: dict over INPUTS, weights summing to ~1
@@ -73,10 +107,10 @@ class Farmer:
         self.input_pref = input_pref
         self.risk_pref = risk_pref
 
-        probs = np.array([crop_pref[c] for c in CROPS])
-        self.crop_history = list(np.random.choice(
-            CROPS, size=CROP_HISTORY_LEN, p=probs / probs.sum()))
+        # Public: deterministic history from preferences
+        self.crop_history = _build_crop_history_from_preferences(crop_pref, CROP_HISTORY_LEN)
 
+        # Per-step state
         self.contracts_offered = None
         self.accepted_contract = None
         self._last_action = None
@@ -85,6 +119,9 @@ class Farmer:
         self.cost = 0.0
         self.crop_revenue = 0.0
 
+    # ================================================================
+    # Spaces
+    # ================================================================
 
     @staticmethod
     def build_action_space():
@@ -100,9 +137,9 @@ class Farmer:
     def build_observation_space():
         """Own type vector + three independent contract parameter vectors."""
         type_dim = 1 + 1 + 1 + len(CROPS) + len(INPUTS)
-        action_contract_dim = len(PAYABLE_ACTION_NAMES) + 2   # per-action pays, upfront_frac, mrv_share
-        result_contract_dim = 2                                 # per_ton_payment, mrv_share
-        hybrid_contract_dim = len(PAYABLE_ACTION_NAMES) + 3    # per-action pays, per_ton, upfront_frac, mrv_share
+        action_contract_dim = len(PAYABLE_ACTION_NAMES) + 2  # per-action pays, upfront_frac, mrv_share
+        result_contract_dim = 2                                # per_ton_payment, mrv_share
+        hybrid_contract_dim = len(PAYABLE_ACTION_NAMES) + 3   # per-action pays, per_ton, upfront_frac, mrv_share
 
         return spaces.Dict({
             "own_type": spaces.Box(low=0.0, high=np.inf, shape=(type_dim,), dtype=np.float32),
@@ -123,10 +160,9 @@ class Farmer:
             result_vec = self._result_contract_to_vec(self.contracts_offered["result"])
             hybrid_vec = self._hybrid_contract_to_vec(self.contracts_offered["hybrid"])
         else:
-            action_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 2, dtype=np.float32) # per-action pays, upfront_frac, mrv_share
-            result_vec = np.zeros(2, dtype=np.float32)                             # per_ton_payment, mrv_share
-            hybrid_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 3, dtype=np.float32) # per-action pays, per_ton, upfront_frac, mrv_share
-
+            action_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 2, dtype=np.float32)
+            result_vec = np.zeros(2, dtype=np.float32)
+            hybrid_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 3, dtype=np.float32)
 
         return {
             "own_type": np.array(type_vec, dtype=np.float32),
@@ -134,6 +170,7 @@ class Farmer:
             "result_contract": np.array(result_vec, dtype=np.float32),
             "hybrid_contract": np.array(hybrid_vec, dtype=np.float32),
         }
+
 
 
     def receive_contracts(self, contracts):
@@ -148,13 +185,15 @@ class Farmer:
 
 
     def compute_yield_and_carbon(self, action, weather_shock):
-        """Compute crop yield, carbon sequestered, costs, revenue from actions and weather."""
+        """
+        Compute crop yield (bu/acre), carbon (tCO2e/acre), costs ($/acre),
+        and revenue ($/acre), then multiply by farm_size for totals.
+        """
         crop = CROPS[action["crop_choice"]]
         inp = INPUTS[action["input_choice"]]
         till = TILLAGE[action["tillage_choice"]]
-        acres = self.farm_size * 100
 
-        # Yield
+        # Yield per acre
         yield_per_acre = BASE_YIELD * (
             1.0
             + FERT_YIELD_BOOST[inp]
@@ -162,9 +201,10 @@ class Farmer:
             + WEATHER_YIELD_STD * weather_shock
         )
         yield_per_acre = max(yield_per_acre, 0.0)
-        self.crop_revenue = yield_per_acre * acres * CROP_PRICES[crop]
+        revenue_per_acre = yield_per_acre * CROP_PRICE_PER_BUSHEL[crop]
+        self.crop_revenue = revenue_per_acre * self.farm_size
 
-        # Carbon
+        # Carbon per acre
         carbon_per_acre = (BASE_CARBON
                            + SOIL_CARBON_FACTOR * self.soil_quality
                            + CROP_CARBON[crop]
@@ -172,49 +212,62 @@ class Farmer:
                            + TILLAGE_CARBON[till])
         carbon_per_acre *= (1.0 + WEATHER_CARBON_STD * weather_shock)
         carbon_per_acre = max(carbon_per_acre, 0.0)
-        self.carbon = carbon_per_acre * acres
+        self.carbon = carbon_per_acre * self.farm_size
 
-        # Cost: production + preference deviation
-        pref_penalty = ((1.0 - self.crop_pref.get(crop, 0)) * 50.0
-                        + (1.0 - self.input_pref.get(inp, 0)) * 30.0)
-        self.cost = (CROP_COSTS[crop] + INPUT_COSTS[inp] + pref_penalty) * self.farm_size
+        # Cost per acre: seed + input + preference deviation penalty
+        pref_penalty_per_acre = ((1.0 - self.crop_pref.get(crop, 0)) * 50.0
+                                 + (1.0 - self.input_pref.get(inp, 0)) * 30.0)
+        cost_per_acre = SEED_COST_PER_ACRE[crop] + INPUT_COST_PER_ACRE[inp] + pref_penalty_per_acre
+        self.cost = cost_per_acre * self.farm_size
 
     def compute_contract_payment(self, mrv_cost):
-        """Compute net payment from the accepted contract given MRV cost."""
+        """
+        Compute net payment from the accepted contract.
+        Upfront portion is valued higher by farmer due to interest rate.
+        """
         ct_type = CONTRACT_TYPES[self.accepted_contract]
         params = self.contracts_offered[ct_type]
-        acres = self.farm_size * 100
         crop = CROPS[self._last_action["crop_choice"]]
         inp = INPUTS[self._last_action["input_choice"]]
         till = TILLAGE[self._last_action["tillage_choice"]]
 
         if ct_type == "action":
-            pay = self._sum_action_payments(params["per_action_payments"], crop, inp, till, acres)
-            pay -= params["mrv_share"] * mrv_cost
+            action_pay_per_acre = self._sum_action_payments_per_acre(
+                params["per_action_payments"], crop, inp, till)
+            upfront = params["upfront_fraction"] * action_pay_per_acre * self.farm_size
+            deferred = (1.0 - params["upfront_fraction"]) * action_pay_per_acre * self.farm_size
+            # Farmer values upfront cash more
+            total_pay = upfront * (1.0 + INTEREST_RATE) + deferred
+            total_pay -= params["mrv_share"] * mrv_cost
 
         elif ct_type == "result":
-            pay = params["per_ton_payment"] * self.carbon
-            pay -= params["mrv_share"] * mrv_cost
+            # Result: all deferred (paid after MRV), no upfront component
+            total_pay = params["per_ton_payment"] * self.carbon
+            total_pay -= params["mrv_share"] * mrv_cost
 
         elif ct_type == "hybrid":
-            action_pay = self._sum_action_payments(params["per_action_payments"], crop, inp, till, acres)
+            action_pay_per_acre = self._sum_action_payments_per_acre(
+                params["per_action_payments"], crop, inp, till)
+            upfront = params["upfront_fraction"] * action_pay_per_acre * self.farm_size
+            deferred_action = (1.0 - params["upfront_fraction"]) * action_pay_per_acre * self.farm_size
             result_pay = params["per_ton_payment"] * self.carbon
-            pay = action_pay + result_pay - params["mrv_share"] * mrv_cost
+            total_pay = upfront * (1.0 + INTEREST_RATE) + deferred_action + result_pay
+            total_pay -= params["mrv_share"] * mrv_cost
 
-        self.payment = pay
+        self.payment = total_pay
 
     @staticmethod
-    def _sum_action_payments(per_action_payments, crop, inp, till, acres):
-        """Sum per-action payments for all qualifying practices."""
+    def _sum_action_payments_per_acre(per_action_payments, crop, inp, till):
+        """Sum per-acre payments for all qualifying practices."""
         total = 0.0
         for name in PAYABLE_ACTION_NAMES:
             if PAYABLE_ACTIONS[name](crop, inp, till):
-                total += per_action_payments[name] * acres
+                total += per_action_payments[name]
         return total
 
 
     def compute_reward(self):
-        """Reward = profit - risk_penalty. Risk penalty scales with stochastic income exposure."""
+        """Reward = profit - risk_penalty. Risk scales with stochastic income exposure."""
         if self.accepted_contract is None:
             return self.crop_revenue - self.cost
 
@@ -223,7 +276,6 @@ class Farmer:
         ct_type = CONTRACT_TYPES[self.accepted_contract]
         params = self.contracts_offered[ct_type]
 
-        # Result-based exposure (stochastic component)
         if ct_type == "action":
             result_exposure = 0.0
         else:
@@ -248,7 +300,7 @@ class Farmer:
 
 
     def get_public_farm_size(self):
-        """Return farm size (fully public)."""
+        """Return farm size in acres (fully public)."""
         return self.farm_size
 
     def get_public_crop_history(self):
@@ -266,6 +318,7 @@ class Farmer:
             freq[c] += 1
         n = len(self.crop_history)
         return [freq[c] / n for c in CROPS]
+
 
 
     @staticmethod
@@ -288,29 +341,31 @@ class Farmer:
         return vec
 
     def __repr__(self):
-        return (f"Farmer(id={self.fid}, size={self.farm_size}, "
+        return (f"Farmer(id={self.fid}, size={self.farm_size}ac, "
                 f"soil={self.soil_quality:.2f}, risk={self.risk_pref:.2f})")
 
 
-# ============================================================
-# Workshop Farmer Types
-# ============================================================
 
 def create_farmers():
-    """5 archetypal farmers spanning the type space."""
+    """5 archetypal farmers spanning the type space. Farm sizes in acres."""
     return [
+        # Large, good soil, risk-tolerant, conventional -> should like result-based
         Farmer(0, 8, 0.85,
                {"corn": .6, "soybean": .25, "wheat": .1, "cover_crop": .05},
                {"chemical_fertilizer": .7, "manure": .2, "none": .1}, 0.15),
+        # Small, poor soil, risk-averse, prefers wheat -> should like action-based
         Farmer(1, 3, 0.30,
                {"corn": .1, "soybean": .15, "wheat": .6, "cover_crop": .15},
                {"chemical_fertilizer": .1, "manure": .7, "none": .2}, 0.85),
+        # Medium, decent soil, moderate risk -> good hybrid candidate
         Farmer(2, 5, 0.55,
                {"corn": .3, "soybean": .3, "wheat": .25, "cover_crop": .15},
                {"chemical_fertilizer": .3, "manure": .4, "none": .3}, 0.45),
+        # Large, good soil, risk-averse, conservation-minded -> tests hybrid appeal
         Farmer(3, 7, 0.75,
                {"corn": .2, "soybean": .25, "wheat": .2, "cover_crop": .35},
                {"chemical_fertilizer": .1, "manure": .4, "none": .5}, 0.70),
+        # Small, medium soil, risk-tolerant, conventional -> low carbon potential
         Farmer(4, 2, 0.45,
                {"corn": .5, "soybean": .3, "wheat": .15, "cover_crop": .05},
                {"chemical_fertilizer": .6, "manure": .25, "none": .15}, 0.20),
