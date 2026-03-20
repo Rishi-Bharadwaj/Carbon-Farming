@@ -123,9 +123,10 @@ class Farmer:
             result_vec = self._result_contract_to_vec(self.contracts_offered["result"])
             hybrid_vec = self._hybrid_contract_to_vec(self.contracts_offered["hybrid"])
         else:
-            action_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 2, dtype=np.float32)
-            result_vec = np.zeros(2, dtype=np.float32)
-            hybrid_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 3, dtype=np.float32)
+            action_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 2, dtype=np.float32) # per-action pays, upfront_frac, mrv_share
+            result_vec = np.zeros(2, dtype=np.float32)                             # per_ton_payment, mrv_share
+            hybrid_vec = np.zeros(len(PAYABLE_ACTION_NAMES) + 3, dtype=np.float32) # per-action pays, per_ton, upfront_frac, mrv_share
+
 
         return {
             "own_type": np.array(type_vec, dtype=np.float32),

@@ -199,9 +199,8 @@ class Aggregator:
         carbon_weight=0 -> pure profit, carbon_weight=1 -> pure carbon.
         """
         profit = self.revenue_total - self.spent - self.mrv_cost_total
-        carbon_value = self.carbon_total * CARBON_PRICE
 
-        reward = (1.0 - self.carbon_weight) * profit + self.carbon_weight * carbon_value
+        reward = (1.0 - self.carbon_weight) * profit + self.carbon_weight * self.carbon_total
 
         overspend = (self.spent + self.mrv_cost_total) - self.budget
         if overspend > 0:
